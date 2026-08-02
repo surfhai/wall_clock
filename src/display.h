@@ -2,9 +2,9 @@
 //
 // Layout is currently a simple placeholder (see CLAUDE.md section 10,
 // "layout sketch ... still to be added as a reference file") and should be
-// revisited once the final positioning is decided. Likewise, this currently
-// uses built-in Adafruit GFX fonts until the custom font headers (see
-// CLAUDE.md section 6) have been generated.
+// revisited once the final positioning has been verified on real hardware
+// (see docs/layout.md). The custom fonts (see CLAUDE.md section 6) have
+// been generated via tools/generate_fonts.sh and are in use.
 #pragma once
 
 #include <Arduino.h>
@@ -25,8 +25,8 @@ struct DisplayData {
 void display_init();
 
 // Full refresh (clears ghosting). Redraws all fields. Must be called on
-// boot, after the ghosting threshold (see config.h) is reached, and after
-// FULL_REFRESH_INTERVAL_MIN (see CLAUDE.md section 7).
+// boot, after the ghosting threshold (see config.h) is reached, and once a
+// day at the midnight tier (see main.cpp runCycle() / CLAUDE.md section 7).
 void display_full_refresh(const DisplayData &data);
 
 // Partial refresh of just the time field (the most frequent change).

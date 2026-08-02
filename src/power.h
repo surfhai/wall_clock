@@ -12,12 +12,12 @@
 // TODO: requires PIN_RTC_INT in config.h (currently a -1 placeholder).
 void power_init_rtc_wakeup();
 
-// Reason for the last wakeup (power-on, RTC alarm, etc.) — useful for the
+// Reason for the last wakeup (power-on, RTC timer, etc.) — useful for the
 // "boot check for missed refreshes" from CLAUDE.md section 7.
-bool power_woke_from_rtc_alarm();
+bool power_woke_from_rtc_timer();
 
-// Puts the ESP32 into deep sleep until the next PCF8563 alarm (via ext0
-// wakeup), or — if DEEP_SLEEP_ENABLED == 0 — not at all (mains-powered,
-// the function returns immediately and main.cpp continues via its
-// delay() loop).
+// Puts the ESP32 into deep sleep until the next PCF8563 countdown timer
+// interrupt (via ext0 wakeup, see rtc_set_countdown_timer()), or — if
+// DEEP_SLEEP_ENABLED == 0 — not at all (mains-powered, the function
+// returns immediately and main.cpp continues via its delay() loop).
 void power_enter_deep_sleep();

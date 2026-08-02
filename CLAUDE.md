@@ -36,7 +36,7 @@ nicht zwingend erforderlich, solange am Netzteil betrieben wird).
 
 | Komponente | Modell / Artikelnummer |
 |---|---|
-| Display | Waveshare 7,5" e-Paper HAT, schwarz/weiß, **Artikelnummer 013504**, **V2-Variante (800×480, seit Sept. 2023)**, 170° Sichtwinkel, direkte SPI-Ansteuerung (**keine** IT8951-Variante) |
+| Display | Waveshare 7,5" e-Paper HAT, schwarz/weiß, **Artikelnummer 013504**, **V2-Variante (800×480, seit Sept. 2023)**, 170° Sichtwinkel, direkte SPI-Ansteuerung (**keine** IT8951-Variante). Panel-Aufdruck auf der FPC-Kabelseite: `075BN-T7-D2 N2A4P05` → bestätigt `GxEPD2_750_T7` (T7-Controller, siehe Abschnitt 4). |
 | Microcontroller | Seeed XIAO ESP32-S3 (WiFi/Bluetooth) |
 | Erweiterung | Seeeduino XIAO Expansion Board (mit onboard OLED, RTC PCF8563, SD-Kartenslot, Grove-I2C-Anschlüssen) |
 | Externe RTC | PCF8563 (auf dem Expansion Board), I2C-Adresse 0x51 |
@@ -91,8 +91,9 @@ Keine Adresskonflikte, da I2C mehrere Geräte parallel erlaubt.
 ## 4. Software-Stack
 
 - **Framework:** PlatformIO (nicht Arduino IDE) — klare Projektstruktur, Git-Versionierung
+- **WLAN-Provisioning:** `WiFiManager` (tzapu) + `Preferences` (NVS) — siehe Abschnitt 5a
 - **Display-Bibliothek:** GxEPD2
-  - Display-Klasse: `GxEPD2_750_T7` (V2, 800×480) — **beim Einrichten anhand des Panel-Aufdrucks auf der FPC-Kabelseite verifizieren**, alternativ `GxEPD2_750c_Z8`
+  - Display-Klasse: `GxEPD2_750_T7` (V2, 800×480) — **bestätigt** anhand des Panel-Aufdrucks `075BN-T7-D2 N2A4P05` auf der FPC-Kabelseite (siehe Abschnitt 2), nicht `GxEPD2_750c_Z8`
   - Framebuffer Full-Mode: 800×480/8 = 48.000 Byte RAM
   - Falls Xiao S3 **nicht** die „Sense"-Variante mit 8 MB PSRAM ist: **Paged-Mode** von GxEPD2 nutzen (nur Bildstreifen im RAM, mehrere Durchgänge) statt Full-Buffer
   - **Fast Partial Refresh** nutzen für häufig wechselnde Bereiche (Uhrzeit), **Full Refresh** selten für Ghosting-Reset (z. B. stündlich) und für seltener wechselnde Bereiche (Datum, KW, Sensorwerte)
@@ -108,6 +109,7 @@ Keine Adresskonflikte, da I2C mehrere Geräte parallel erlaubt.
   - Zusätzlicher Fallback: `time.cloudflare.com`
   - Zeitzone: `configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "de.pool.ntp.org", "pool.ntp.org", "time.cloudflare.com");`
   - Sync-Häufigkeit: ca. 1×/Tag ausreichend (kein Stratum-1-Server nötig)
+- **WLAN-Zugangsdaten:** `Preferences` (NVS) + `WiFiManager` (tzapu) — siehe Abschnitt 5a. **Kein** `secrets.h` mit hartcodierten Zugangsdaten mehr (siehe Hinweis unten in der Projektstruktur).
 
 ### Modulare Projektstruktur
 
@@ -115,14 +117,13 @@ Keine Adresskonflikte, da I2C mehrere Geräte parallel erlaubt.
 src/
   main.cpp         — nur Orchestrierung, inkl. Sprachauswahl der Display-Strings
   display.cpp/h    — e-Paper Rendering
-  net_time.cpp/h   — WLAN-Verbindung + NTP-Zeit
+  net_time.cpp/h   — WLAN-Verbindung (inkl. AP-Fallback-Provisioning, siehe Abschnitt 5a) + NTP-Zeit
   rtc.cpp/h        — externe RTC PCF8563 (Zeit lesen/schreiben, Alarm-Platzhalter)
   sensor.cpp/h     — Temperatur-/Feuchte-Sensor, austauschbar über SENSOR_TYPE
   power.cpp/h      — Deep Sleep Management, WiFi-Toggle, RTC-Wakeup
 lib/
 include/
   config.h                 — zentrale Pin-/Konstanten-Definitionen, inkl. DISPLAY_LANGUAGE (siehe Abschnitt 1)
-  secrets.h(.example)      — WLAN-Zugangsdaten (secrets.h ist gitignored)
   <FontName><Size>pt7b.h   — selbst generierte Font-Header (siehe Abschnitt 6)
 platformio.ini
 ```
@@ -132,6 +133,11 @@ case-insensitiv. Ein lokales `wifi.h` kollidiert dort mit dem `#include <WiFi.h>
 der ESP32-Arduino-Core-Bibliothek, wodurch deren `WiFi`-Klasse nicht mehr gefunden
 wird (Build-Fehler „'WiFi' was not declared in this scope"). Deshalb heißt das
 WLAN-/NTP-Modul in diesem Projekt `net_time.cpp/h`.
+
+⚠️ **Kein `secrets.h` mehr für WLAN-Zugangsdaten:** Ursprünglich war eine
+gitignored `secrets.h` mit hartcodierten SSID/Passwort vorgesehen. Das wurde
+verworfen zugunsten von `Preferences`(NVS) + `WiFiManager`, siehe Abschnitt 5a —
+damit lassen sich Zugangsdaten ändern, ohne die Firmware neu zu bauen.
 
 Grundprinzip: Bibliotheken per Namen referenzieren (z. B. „GxEPD2 v1.x"), nicht Library-Code einfügen — spart Tokens bei der Arbeit mit Claude Code.
 
@@ -143,8 +149,23 @@ Ziel: Vorbereitung auf späteren Batteriebetrieb, auch wenn aktuell Netzbetrieb.
 
 ### Wakeup-Strategie
 - **Nicht** den internen ESP32-Timer für Deep-Sleep-Wakeup nutzen (driftet stark)
-- Stattdessen: **PCF8563-Alarm/Timer** setzen, INT-Pin des PCF8563 an freien GPIO anschließen, ESP32 per `esp_sleep_enable_ext0_wakeup()` (oder ext1) darauf scharf schalten
+- Stattdessen: **PCF8563**, INT-Pin an freien GPIO anschließen, ESP32 per `esp_sleep_enable_ext0_wakeup()` (oder ext1) darauf scharf schalten
 - ESP32 verbraucht im Deep Sleep nur noch µA; Zeithaltung übernimmt komplett der PCF8563
+
+**Timer-Register vs. Alarm-Register des PCF8563 — wichtige Unterscheidung:**
+
+| | Timer-Register (Countdown) | Alarm-Register |
+|---|---|---|
+| Funktionsweise | 8-Bit-Countdown ab gesetztem Wert | Abgleich gegen Minute/Stunde/Tag/Wochentag |
+| Taktquelle/Auflösung | wählbar: 4096 Hz, 64 Hz, **1 Hz**, 1/60 Hz — mit 1 Hz **sekundengenau** | **nur Minutengranularität**, keine Sekunden |
+| Bezug | reines Intervall ab dem Setzen ("wecke in X Sekunden") | feste Uhrzeit ("wecke um HH:MM") |
+| Einsatz in diesem Projekt | **primär genutzt** — siehe Abschnitt 5b (Tier-Strategie) | nicht benötigt, da die Timer-Lösung die Anforderungen sekundengenau abdeckt |
+
+**Projektentscheidung:** Es wird ausschließlich das **Timer-Register mit 1-Hz-Quelle** verwendet
+(nicht das Alarm-Register). Der PCF8563 liefert damit sowohl die Referenzzeit (normales
+Uhrzeit-Register) als auch den sekundengenauen Countdown bis zum nächsten Wakeup — beides
+läuft vom selben Quarz, daher keine Drift-Diskrepanz zwischen berechneter Sekundenanzahl und
+tatsächlich verstrichener Zeit. Details zur Berechnung der Sleep-Dauer: siehe Abschnitt 5b.
 
 ### RTC-Genauigkeit / Sync-Intervall
 Faustformel: Drift (s/Tag) = ppm-Wert × 86400 / 1.000.000
@@ -164,7 +185,7 @@ Ablauf:
 1. esp_netif_init() + esp_wifi_init() nur beim Sync-Zyklus aufrufen
 2. esp_wifi_start() → verbinden → NTP holen → PCF8563 stellen
 3. esp_wifi_stop() + esp_wifi_deinit() + esp_netif_deinit()
-4. Danach normaler Deep Sleep bis zum nächsten PCF8563-Alarm
+4. Danach normaler Deep Sleep bis zum nächsten PCF8563-Timer-Wakeup (siehe Abschnitt 5b)
 ```
 
 ### Wird für dieses Projekt benötigt
@@ -185,6 +206,161 @@ Ablauf:
 
 ---
 
+## 5a. WLAN-Zugangsdaten — Speicherung & Änderung ohne Neuflash
+
+Ziel: SSID/Passwort sollen änderbar sein, **ohne die Firmware neu zu bauen und zu flashen**
+(z. B. bei Routerwechsel oder neuem Passwort).
+
+### Speicherung
+- Bibliothek: **`Preferences`** (nutzt intern NVS — Non-Volatile Storage, ein eigener Flash-Bereich)
+- **Kein** Hartcodieren von SSID/Passwort im Quellcode (kein `secrets.h` mehr, siehe Abschnitt 4)
+- Zugangsdaten überleben ein Neuflashen der Firmware, solange die NVS-Partition dabei nicht mitgelöscht wird
+
+```cpp
+#include <Preferences.h>
+Preferences prefs;
+
+void saveWifi(String ssid, String pass) {
+  prefs.begin("wifi", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  prefs.end();
+}
+
+void loadWifi(String &ssid, String &pass) {
+  prefs.begin("wifi", true);
+  ssid = prefs.getString("ssid", "");
+  pass = prefs.getString("pass", "");
+  prefs.end();
+}
+```
+
+### Ändern der Zugangsdaten: eigener AP mit Captive Portal (Kernstrategie)
+Bibliothek: **`WiFiManager`** (tzapu) — Standardansatz für genau dieses Szenario.
+
+Ablauf:
+1. ESP32 versucht beim Boot, sich mit den in NVS gespeicherten Zugangsdaten zu verbinden
+2. Schlägt das fehl (falsches/geändertes Passwort, Router nicht erreichbar) **oder** wird ein
+   Reset-/Config-Trigger ausgelöst → ESP32 öffnet einen **eigenen Access Point** mit
+   Captive-Portal-Konfigurationsseite
+3. Verbindung per Smartphone/Laptop mit diesem AP → Eingabe der neuen SSID/Passwort über die
+   automatisch angezeigte Weboberfläche
+4. `WiFiManager` speichert die neuen Daten selbstständig (intern ebenfalls über NVS) und
+   verbindet sich automatisch neu
+
+Minimalbeispiel:
+```cpp
+#include <WiFiManager.h>
+WiFiManager wm;
+wm.autoConnect("ESP32-Setup");   // AP-Name im Fallback-Fall
+```
+
+**Trigger für den Config-Modus:** noch festzulegen (siehe TODO), z. B.:
+- automatisch bei fehlgeschlagener Verbindung (Standardverhalten von `autoConnect()`)
+- zusätzlich manuell per Taster/Boot-Pin-Kombination erzwingbar, um den Config-Modus auch bei
+  funktionierender bestehender Verbindung gezielt aufzurufen (z. B. für Umzug in ein neues WLAN)
+
+### Verworfene/Zusatz-Option: WPS über die Fritzbox
+- Technisch möglich über `esp_wps.h` (WPS-PBC-Modus, Taste an der Fritzbox drücken)
+- **Nicht** als Hauptlösung gewählt: erfordert physischen Zugriff auf den Router bei jedem
+  Setup, und nicht jede Fritzbox-Firmware hat WPS in jedem Modus aktiviert
+- Bleibt als mögliche Komfort-Ergänzung im Hinterkopf, aber `WiFiManager` ist der primäre Weg
+
+### Zusammenspiel mit der Energie-/Deep-Sleep-Strategie (Abschnitt 5)
+- Der reguläre Betrieb (WiFi nur kurz für NTP-Sync aktivieren, siehe „WiFi zur Laufzeit ein/aus"
+  oben) bleibt unverändert
+- Der AP-Fallback-Modus ist ein **Sonderfall**, der nur bei fehlgeschlagener Verbindung oder
+  explizitem Trigger aktiv wird — in diesem Modus bleibt WiFi (als AP) aktiv, bis die
+  Konfiguration abgeschlossen ist; kein Deep Sleep während des Config-Modus
+
+### Default-Zugangsdaten beim Firmware-Upload vorschreiben (optional)
+Ziel: Erstinbetriebnahme ganz ohne Captive-Portal-Schritt ermöglichen, ohne vom NVS/WiFiManager-
+Ansatz abzuweichen.
+
+- In `platformio.ini` per `build_flags` einen Default hinterlegen, z. B.
+  `-DDEFAULT_WIFI_SSID=\"...\" -DDEFAULT_WIFI_PASS=\"...\"` — Werte kommen aus einer lokalen,
+  **gitignoreten** Datei (z. B. `wifi_defaults.ini`, analog zum verworfenen `secrets.h`-Prinzip,
+  hier aber nur als einmaliger Startwert, nicht als laufende Quelle)
+- Beim allerersten Boot prüfen: ist in `Preferences`/NVS bereits eine SSID gespeichert?
+  - **Nein** → Default-Werte aus den Build-Flags einmalig per `saveWifi()` in NVS schreiben
+  - **Ja** → Build-Flags ignorieren, ganz normal mit den gespeicherten Werten weiterarbeiten
+- Ab dem zweiten Boot läuft alles ausschließlich über NVS; `WiFiManager` greift bei jedem
+  weiteren Boot nur noch auf die (ggf. inzwischen per AP-Fallback geänderten) NVS-Werte zu
+- Alternative (aufwendiger, hier nicht gewählt): fertiges NVS-Partition-Image per
+  `nvs_partition_gen.py` vorab erzeugen und getrennt vom Firmware-Upload per `esptool.py`
+  flashen
+
+---
+
+## 5b. Deep-Sleep-Tier-Strategie (Kernlogik für Wakeup-Timing)
+
+Grundprinzip: **Es gibt nur einen Wach-Rhythmus (jede Minute)** — Stunden- und Tageswechsel
+sind lediglich Minutenwechsel, bei denen zusätzlich etwas passiert. Kein Polling; nach jeder
+Aktion wird exakt berechnet, wann und wie lange vorher der nächste Wakeup sein muss, dann
+Deep Sleep bis dahin über das PCF8563-**Timer-Register mit 1-Hz-Quelle** (siehe Abschnitt 5,
+Wakeup-Strategie).
+
+### Ablauf pro Zyklus
+
+**1. Aufwachen → RTC-Zeit lesen**
+Aktuelle Zeit vom PCF8563 auslesen (der ESP32 hat im Deep Sleep keine eigene laufende Uhr).
+Gleichzeitig Boot-Check: weicht die gelesene Zeit stark vom erwarteten Zieltarget ab (z. B.
+durch Stromausfall) → sofort Full-Refresh erzwingen statt normaler Minuten-Logik.
+
+**2. Aktions-Tier bestimmen**
+Da beim letzten Einschlafen bereits gezielt auf diesen Minutenwechsel gewartet wurde, ist
+deterministisch bekannt, was ansteht:
+- `minute == 0 && hour == 0` → **Mitternacht-Tier**: WiFi an, NTP-Sync, RTC stellen,
+  Full-Refresh, WiFi aus
+- `minute == 0` (sonst) → **Stunden-Tier**: kompletter Uhr-Bereich partiell refreshen +
+  Temp/Feuchte-Check
+- sonst → **Minuten-Tier**: nur Minutenbereich partiell refreshen + Temp/Feuchte-Check
+- **zusätzlich, unabhängig vom Tier:** Ghosting-Zähler prüfen — Schwellwert erreicht? →
+  Full-Refresh einschieben (auch außerhalb der Mitternacht), siehe Abschnitt 7
+
+**3. Aktion(en) ausführen**
+
+**4. Nächstes Ziel berechnen**
+`next_target = aktuelles_target + 60s` (der nächste Minutenwechsel)
+
+**5. Budget für das nächste Ziel ermitteln**
+Tier von `next_target` vorausschauend bestimmen (gleiche Logik wie Schritt 2) und eine
+geschätzte Vorlaufzeit zuordnen:
+
+| Tier | Geschätztes Budget | Warum |
+|---|---|---|
+| Minute | z. B. 1–2 s | nur Partial Refresh, kein WiFi |
+| Stunde | z. B. 2–3 s | etwas größerer Partial Refresh |
+| Mitternacht | z. B. 8–15 s | WiFi-Connect + NTP-Roundtrip sind die variable Größe |
+
+Plus fixer Sockel für ESP32-Bootoverhead nach Deep-Sleep-Wakeup (Peripherie-/I2C-/SPI-Init,
+üblicherweise wenige hundert ms) als Konstante einrechnen.
+
+**6. Timer setzen und schlafen**
+`sleep_seconds = (next_target − budget[next_tier]) − aktuelle_RTC_zeit`
+→ PCF8563-Timer-Register (1-Hz-Quelle) auf `sleep_seconds` setzen, Deep Sleep.
+
+### Zusatzpunkte
+
+- **Budgets nicht raten, sondern messen:** Beim ersten produktiven Lauf tatsächliche Dauer
+  jeder Aktion stoppen (`millis()` vor/nach Refresh bzw. WiFi-Connect) und mit Sicherheitsmarge
+  (z. B. +30–50 %) als Budget übernehmen. Optional in NVS persistieren und über die Zeit
+  kalibrieren (z. B. gleitender Mittelwert der letzten X Mitternachts-Zyklen) — WiFi-Connect-
+  Dauer schwankt am meisten, dafür lohnt sich eine großzügige Marge am ehesten.
+- **Negative/zu knappe Sleep-Zeit abfangen:** Falls eine Aktion länger dauert als das Budget
+  vorsah (`sleep_seconds` würde negativ oder sehr klein) → nicht crashen, sondern minimalen
+  Sleep (z. B. 1 s) einplanen und den nächsten Zyklus normal nachziehen lassen (Anzeige dann
+  mal 1–2 s zu spät, aber nichts hängt)
+- **Kein Drift-Problem:** Referenzzeit und Countdown-Timer laufen vom selben PCF8563-Quarz —
+  keine Rundungs-/Drift-Diskrepanz zwischen berechneter Sekundenanzahl und tatsächlich
+  verstrichener Zeit
+- **NTP-Timeout bleibt im Mitternacht-Tier eingebettet:** der bereits definierte NTP-Fallback
+  (Timeout + Weiterarbeiten mit letzter RTC-Zeit, siehe Abschnitt 7) sitzt innerhalb des
+  Mitternacht-Aktionsblocks und beeinflusst nur, ob die RTC neu gestellt wird — nicht die
+  grundsätzliche Wach-Logik
+
+---
+
 ## 6. Font-Strategie
 
 **Format:** Adafruit-GFX-Font-Format (`.h`-Header), TTF → `.h` via `fontconvert`-Tool aus dem Adafruit-GFX-Library-Repo.
@@ -198,51 +374,67 @@ Ablauf:
 - Fonts landen im Flash (PROGMEM), nicht im RAM — mehrere Font-Größen sind unkritisch für RAM-Verbrauch
 
 ### Layout-Anforderung: Uhrzeit-Ziffern
-- Zielgröße Uhrzeit „12:05" liegt bei ca. **267 px** Ziffernhöhe → **überschreitet die 255px-uint8_t-Grenze**
-- Optionen bei Bedarf:
-  1. Knapp unter 255 px bleiben (z. B. 250 px)
-  2. Siebensegment-Stil selbst aus Rechtecken/Polygonen zeichnen (kein Font-Speicher nötig, beliebig scharf)
-  3. Vorgerenderte Bitmaps pro Ziffer via `drawBitmap()`
-- **Entscheidung dazu noch offen** — muss vor Font-Konvertierung final getroffen werden
+- Ursprüngliche Schätzung „ca. 267 px" für „12:05" war zu hoch — anhand der
+  tatsächlichen Layout-Vorlage (`docs/Layout.png`, pixelgenau vermessen,
+  siehe `docs/layout.md`) sind es **187 px**, damit unproblematisch unter
+  der 255px-`uint8_t`-Grenze (Option 1 aus den ursprünglich erwogenen
+  Alternativen — Siebensegment/Bitmaps sind damit hinfällig).
+- Trotzdem trat ein Sonderfall auf: `fontconvert`s `yAdvance`-Feld
+  (Zeilenabstand, skaliert mit der Zielgröße, nicht mit der reinen
+  Glyphen-Höhe) überschreitet auch bei 187px noch den `uint8_t`-Bereich →
+  `tools/fonts.py`s `clamp-yadvance`-Subcommand klemmt das automatisch
+  (siehe `include/fonts/README.md`/`tools/README.md`; `yAdvance` wird von
+  diesem Projekt ohnehin nicht genutzt, da kein mehrzeiliger Text vorkommt).
 
-### Benötigte Font-Größen (mind. 3, je nach Layout)
-| Verwendung | Zeichensatz |
-|---|---|
-| Große Font (Uhrzeit 12:05) | `0123456789:` |
-| Mittlere Font (Datum) | `0123456789-` |
-| Mittlere Font (Temp/Feuchte) | `0123456789,%°CrLF` |
-| Kleine/mittlere Font (KW + Wochentag) | `A-Z`, Umlaute (Ä/Ö/Ü), `0-9` |
+### Benötigte Font-Größen (final, pixelgenau aus `docs/Layout.png` vermessen)
+| Font | Zielgröße | Verwendung | Zeichensatz |
+|---|---|---|---|
+| `FONT_TIME` | 187 px | Uhrzeit (`12:05`) | `0123456789:` |
+| `FONT_SMALL` | 38 px | Kalenderwoche (`KW32`) + Wochentag (`Donnerstag`) | volles ASCII (32–126) |
+| `FONT_MEDIUM` | 53 px | Datum + Temperatur + Luftfeuchte | ASCII + Latin-1 (32–176, inkl. `°`) |
 
-Empfehlung: gemeinsame Buchstaben+Zahlen-Font für Wochentag/KW, reine Ziffern-Font (+Sonderzeichen) für Uhrzeit/Datum/Sensorwerte → effektiv 3 Fonts statt 4.
+Effektiv 3 Fonts, aber anders gruppiert als ursprünglich angenommen: nicht
+"Buchstaben+Zahlen" vs. "reine Ziffern", sondern nach tatsächlich
+gemessener Pixelgröße in der Layout-Vorlage — Datum landet bei derselben
+Größe wie die Sensorwerte, nicht bei Kalenderwoche/Wochentag. Details und
+die Messmethode (pixelgenau, ohne Verfälschung durch Ober-/Unterlängen und
+das Gradzeichen) siehe `docs/layout.md`.
 
 ### Schriftart
-- **Noch nicht final entschieden.**
+- **Final entschieden: Droid Sans Mono.** Kein Bold-Schnitt der Schriftart
+  verfügbar → synthetischer Bold-Schnitt per FontForge erzeugt
+  (`tools/fonts.py`s `make-bold`-Subcommand, siehe `tools/README.md`).
 - Ursprünglich gewünscht: **Monospace821 BT** — proprietärer Bitstream-Font, Lizenzlage für dieses Projekt unklar/uneinheitlich angegeben (Personal-Use-Angaben widersprüchlich)
-- Freie Alternativen (OFL-lizenziert, für jeden Zweck frei nutzbar): **Space Mono**, **JetBrains Mono**, **Courier Prime**, **IBM Plex Mono**
-- Wichtig: bei der Wahl echte Monospace-TTF verwenden (nicht nur optisch ähnlich)
+- Erwogene freie Alternativen (OFL-lizenziert, für jeden Zweck frei nutzbar): Space Mono, JetBrains Mono, Courier Prime, IBM Plex Mono — letztlich Droid Sans Mono gewählt
 
 ### Konvertierungs-Workflow
+Tatsächlich umgesetzt in `tools/generate_fonts.sh` (ruft `tools/fonts.py`-
+Subcommands auf, siehe `tools/README.md` für die vollständige Anleitung),
+nicht als manuelle `fontconvert`-Einzelaufrufe. Kurzfassung:
 ```bash
 git clone https://github.com/adafruit/Adafruit-GFX-Library
 cd Adafruit-GFX-Library/fontconvert
 make    # benötigt freetype
 
-# Pro Zielgröße + Zeichenbereich (ASCII start/end optional):
-./fontconvert <font>.ttf <pixelgröße> <ascii_start> <ascii_end> > include/<Name><Größe>.h
-
-# Beispiele:
-./fontconvert SpaceMono-Bold.ttf 250 48 58  > include/MonoClock250.h    # Ziffern+Doppelpunkt
-./fontconvert SpaceMono-Bold.ttf 60  32 126 > include/MonoDate60.h      # Datum/Wochentag
-./fontconvert SpaceMono-Bold.ttf 50  32 126 > include/MonoSensor50.h    # Temp/Feuchte
+cd tools/
+./generate_fonts.sh   # erzeugt alle Font-Header aus include/fonts/README.md in einem Rutsch
 ```
-Empfehlung: Shell-Skript/Makefile anlegen, das alle benötigten Font/Größe-Kombinationen in einem Rutsch erzeugt — nur bei Font-/Layoutänderung neu ausführen.
 
 Online-Alternative ohne lokalen Build: GFX-Font-Generator im Web (Suchbegriff „adafruit gfx font converter online").
 
 ---
 
-## 7. Display-Refresh-Strategie — offene Punkte für die Code-Generierung
+## 7. Display-Refresh-Strategie
 
+### Grundzyklus (Tiers)
+Die eigentliche Ausführlogik — Details zur Wakeup-Berechnung dazu in Abschnitt 5b:
+- **jede Minute:** Minutenbereich partiell refreshen; Temperatur/Feuchte werden nur bei
+  Änderung des **angezeigten** (gerundeten) Werts mit-refresht
+- **jede Stunde:** gesamter Uhr-Bereich partiell refreshen (inkl. Temp/Feuchte-Check)
+- **einmal täglich, um Mitternacht:** kompletter Full-Refresh; WLAN kurz an, NTP-Sync, RTC
+  stellen, Refresh exakt um 0:00, danach WLAN wieder aus
+
+### Offene Punkte für die Code-Generierung
 Diese Punkte wurden als "beim Programmieren unbedingt berücksichtigen" markiert:
 
 - **Ghosting-Zähler:** Anzahl Partial Refreshes seit letztem Full Refresh mitzählen, nach Schwellwert automatisch Full Refresh erzwingen
@@ -250,7 +442,8 @@ Diese Punkte wurden als "beim Programmieren unbedingt berücksichtigen" markiert
 - **NTP-Fallback:** Verhalten definieren, falls kein NTP-Server erreichbar ist (z. B. letzte bekannte PCF8563-Zeit weiterverwenden)
 - **Boot-Check für verpasste Refreshes:** beim Aufwachen prüfen, ob ein erwarteter Refresh-Zyklus verpasst wurde (z. B. durch Stromausfall) und ggf. nachholen
 - **Ziffernbreite bei Partial Refresh:** Bei proportionalen Schriftarten kann eine schmalere Ziffer eine breitere nicht vollständig überschreiben (Bildreste bleiben sichtbar). Lösung: feste Zeichenbreite (Monospace hilft hier direkt) oder kompletten Ziffern-Bounding-Box-Bereich löschen vor Neuzeichnen
-- Deep-Sleep mit RTC-Alarm-Interrupt statt aktivem Polling nutzen (energieeffizienter)
+- **Sommer-/Winterzeit-Umstellung:** Die DST-Umstellung fällt nicht auf Mitternacht, sondern meist auf 2 bzw. 3 Uhr früh. Falls die Stunden-Tier-Logik zeitbasiert zählt statt einfach die aktuelle RTC-Zeit auszulesen, kann es bei der Umstellung zu einer übersprungenen oder doppelten Stunde kommen — Stunden-Tier-Erkennung muss robust gegen diesen Sprung sein (z. B. immer `hour`/`minute` direkt aus der gelesenen RTC-Zeit ableiten, nicht mitzählen)
+- Deep-Sleep mit RTC-Timer-Interrupt statt aktivem Polling nutzen (energieeffizienter) — siehe Abschnitt 5b für die konkrete Umsetzung
 
 ---
 
@@ -286,14 +479,18 @@ git push -u origin main
 
 ## 10. Offene Punkte / TODOs
 
-- [ ] Finale Schriftart festlegen (Space Mono / JetBrains Mono / Courier Prime / andere)
-- [ ] Lösung für Uhrzeit-Ziffern >255px festlegen (kleiner bleiben / Siebensegment / Bitmaps)
-- [ ] Finalen I2C-Sensor für Temp/Feuchte auswählen (SHT4x / SHT31 / AHT20 / anderer)
-- [ ] Panel-Aufdruck auf FPC-Kabelseite prüfen zur endgültigen Bestätigung `GxEPD2_750_T7` vs. `GxEPD2_750c_Z8`
+- [x] Finale Schriftart festgelegt: Droid Sans Mono (synthetischer Bold-Schnitt, siehe Abschnitt 6 / `tools/README.md`)
+- [x] Lösung für Uhrzeit-Ziffern >255px festgelegt: Option 1, tatsächlich nur 187 px (pixelgenau aus `docs/Layout.png` vermessen, siehe Abschnitt 6/`docs/layout.md`)
+- [ ] Finalen I2C-Sensor für Temp/Feuchte auswählen (SHT4x / SHT31 / AHT20 / anderer) — Code liegt bereit (`SENSOR_TYPE` in `config.h`), aktuell `SENSOR_TYPE_NONE`-Platzhalter mit Dummy-Werten
+- [x] Panel-Aufdruck auf FPC-Kabelseite geprüft: `075BN-T7-D2 N2A4P05` → `GxEPD2_750_T7` bestätigt (siehe Abschnitt 2/4)
 - [ ] Prüfen, ob Xiao S3 „Sense"-Variante mit 8 MB PSRAM vorliegt (bestimmt Full-Buffer vs. Paged-Mode)
-- [ ] Git-Repository anlegen (bisher noch nicht eingerichtet)
-- [ ] Layout-Skizze (Positionierung der Elemente auf 800×480) noch als Referenzdatei ins Projekt aufnehmen
-- [ ] Batteriebetrieb — aktuell nur konzeptionell vorbereitet, nicht umgesetzt (Netzbetrieb aktiv)
+- [x] Git-Repository eingerichtet
+- [x] Layout-Skizze als Referenzdatei ins Projekt aufgenommen: `docs/Layout.png` (Mockup) + pixelgenau vermessene Koordinaten in `docs/layout.md`/`src/display.cpp`; Fonts mit den neuen Zielgrößen (187/38/53px) regeneriert, Variablennamen gegen echten `fontconvert`-Output verifiziert — Verifikation am echten Display steht noch aus
+- [ ] Batteriebetrieb — Architektur ist umgesetzt (PCF8563-Timer-Register-Wakeup, Deep-Sleep-Tier-Zyklus in `main.cpp`, siehe Abschnitt 5/5b), aber noch inaktiv/ungetestet: `DEEP_SLEEP_ENABLED` steht auf 0 (Netzbetrieb) und `PIN_RTC_INT` ist noch Platzhalter (-1) in `config.h`
+- [ ] Trigger für WLAN-Config-Modus (AP-Fallback, siehe Abschnitt 5a) festlegen: aktuell nur automatisch bei Verbindungsfehler (`wifi_connect_or_configure()`); zusätzlicher manueller Taster/Boot-Pin-Trigger noch nicht umgesetzt
+- [x] AP-Name/Passwort für den `WiFiManager`-Konfigurations-AP festgelegt: `WIFI_CONFIG_AP_NAME` in `config.h` (`Wall_Clock_Setup`); `WIFI_CONFIG_AP_PASSWORD` bewusst **nicht** in `config.h` (das ist eine committete Datei) — Fallback dort ist `""` (offener AP), das echte Passwort gehört wie die WLAN-Zugangsdaten ins gitignorete `wifi_defaults.ini` (siehe `wifi_defaults.ini.example`), min. 8 Zeichen sonst bleibt der AP offen
+- [ ] Konkrete Budget-Werte (Sekunden pro Tier) für die Deep-Sleep-Berechnung aus Abschnitt 5b anhand realer Messungen festlegen — aktuell grobe Platzhalter (`TIER_BUDGET_MINUTE_S`/`_HOUR_S`/`_MIDNIGHT_S` in `config.h`)
+- [x] Default-WLAN-Zugangsdaten per Build-Flags werden genutzt: `wifi_defaults.ini` (lokal, gitignored; Vorlage: `wifi_defaults.ini.example`)
 
 ---
 

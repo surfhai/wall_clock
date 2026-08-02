@@ -65,8 +65,39 @@
 // ---------------------------------------------------------------------------
 // WiFi / NTP
 // ---------------------------------------------------------------------------
-// SSID/password are NOT here but in include/secrets.h (see
-// include/secrets.h.example) — secrets.h is excluded via .gitignore.
+// Credentials are NOT hardcoded here. They live in NVS (via Preferences)
+// and are entered through the WiFiManager captive portal, see CLAUDE.md
+// section 5a. No more secrets.h.
+
+// AP name shown for the WiFiManager configuration portal (opened when no
+// stored/working WiFi connection is available).
+#define WIFI_CONFIG_AP_NAME "Wall_Clock_Setup"
+
+// Password for that AP. NOT hardcoded here - this file is committed to
+// git, so a real password belongs in the gitignored wifi_defaults.ini
+// (its WIFI_CONFIG_AP_PASSWORD build_flag, see wifi_defaults.ini.example),
+// same mechanism as DEFAULT_WIFI_SSID/DEFAULT_WIFI_PASS above. This is
+// just the fallback for when that file doesn't set one.
+// WiFiManager requires at least 8 characters (WPA2 minimum) - anything
+// shorter (including this empty-string fallback) means an open,
+// unprotected AP.
+#ifndef WIFI_CONFIG_AP_PASSWORD
+#define WIFI_CONFIG_AP_PASSWORD ""
+#endif
+
+// Preferences (NVS) namespace + keys used to store the WiFi credentials
+// that wifi_connect_or_configure() actually connects with.
+#define WIFI_PREFS_NAMESPACE "wifi"
+#define WIFI_PREFS_KEY_SSID  "ssid"
+#define WIFI_PREFS_KEY_PASS  "pass"
+
+// Optional first-boot bootstrap (see CLAUDE.md section 5a "Default-
+// Zugangsdaten beim Firmware-Upload vorschreiben"): if DEFAULT_WIFI_SSID/
+// DEFAULT_WIFI_PASS are defined (e.g. via build_flags from a gitignored
+// wifi_defaults.ini, see platformio.ini), they seed NVS on first boot only,
+// skipping the captive portal for initial commissioning.
+// TODO (CLAUDE.md section 10): decide whether this is actually used, or
+// first boot should always go through the AP fallback captive portal.
 
 #define NTP_SERVER_PRIMARY   "de.pool.ntp.org"
 #define NTP_SERVER_FALLBACK1 "pool.ntp.org"
@@ -104,17 +135,29 @@
 // 100 is a rough starting value (~once a day at a one-minute update rate).
 #define GHOSTING_FULL_REFRESH_THRESHOLD 100
 
-// Also force a full refresh at least once an hour, independent of the
-// ghosting counter (see CLAUDE.md section 7).
-#define FULL_REFRESH_INTERVAL_MIN 60
-
 // ---------------------------------------------------------------------------
 // Deep sleep / power (not actively used yet while mains-powered — see
 // CLAUDE.md section 5, preparation for later battery operation)
 // ---------------------------------------------------------------------------
 #define DEEP_SLEEP_ENABLED 0  // TODO: set to 1 once battery operation is active
 
-// How often (in minutes) the display should refresh while deep-sleeping,
-// driven by the PCF8563 alarm (not the internal ESP32 timer, see CLAUDE.md
-// section 5).
+// The wall clock only ever wakes up once a minute (see CLAUDE.md section
+// 5b) — hour/midnight changes are just minute changes where extra work
+// happens. Wakeup is driven by the PCF8563's countdown TIMER register with
+// a 1 Hz source (not the internal ESP32 timer, and not the PCF8563's alarm
+// register — see CLAUDE.md section 5).
 #define DISPLAY_UPDATE_INTERVAL_MIN 1
+
+// Estimated lead time (in seconds) to wake up before each tier's target
+// minute, so the display update finishes exactly on time (see CLAUDE.md
+// section 5b, step 5). TODO: these are rough starting guesses — measure the
+// actual duration of each tier's work (millis() before/after) on real
+// hardware and replace with measured values plus a safety margin.
+#define TIER_BUDGET_MINUTE_S    2
+#define TIER_BUDGET_HOUR_S      3
+#define TIER_BUDGET_MIDNIGHT_S 15
+
+// PCF8563 timer register is 8-bit -> 255 s max at the 1 Hz source used here.
+// Comfortably more than the ~60 s needed between wakeups (see CLAUDE.md
+// section 5b).
+#define RTC_TIMER_MAX_SECONDS 255

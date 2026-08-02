@@ -7,6 +7,26 @@
 static RTC_PCF8563 pcf8563;
 static bool s_initialized = false;
 
+// PCF8563 register addresses/bits for the countdown timer (NXP PCF8563
+// datasheet). Not exposed by RTClib's RTC_PCF8563 class, so accessed
+// directly here.
+namespace {
+constexpr uint8_t kRegControlStatus2 = 0x01;
+constexpr uint8_t kRegTimerControl   = 0x0E;
+constexpr uint8_t kRegTimer          = 0x0F;
+
+constexpr uint8_t kCtrl2Tie = 1 << 2;  // Timer Interrupt Enable
+constexpr uint8_t kTimerCtrlEnable  = 1 << 7;  // TE
+constexpr uint8_t kTimerCtrlFd1Hz  = 0b10;     // TD1:TD0 = 1 Hz source
+
+void writeReg(uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(I2C_ADDR_RTC);
+    Wire.write(reg);
+    Wire.write(value);
+    Wire.endTransmission();
+}
+}  // namespace
+
 bool rtc_init() {
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
 
@@ -45,14 +65,23 @@ void rtc_set_time(const struct tm &t) {
     pcf8563.adjust(dt);
 }
 
-void rtc_set_next_wakeup_alarm(uint8_t minutesFromNow) {
-    // TODO (battery operation): check the RTClib::RTC_PCF8563 alarm API and
-    // use it here (e.g. set a minute/hour alarm to now()+minutesFromNow).
-    // Currently unused since DEEP_SLEEP_ENABLED == 0 (mains-powered).
-    (void)minutesFromNow;
+void rtc_set_countdown_timer(uint8_t seconds) {
+    if (!s_initialized) return;
+
+    // Disable the timer first while reconfiguring, then load the countdown
+    // value, then enable with a 1 Hz source (see CLAUDE.md section 5 -
+    // timer register, not the alarm register).
+    writeReg(kRegTimerControl, kTimerCtrlFd1Hz);
+    writeReg(kRegTimer, seconds);
+    writeReg(kRegTimerControl, kTimerCtrlEnable | kTimerCtrlFd1Hz);
+
+    // Enable the timer interrupt and clear any pending timer/alarm flags.
+    writeReg(kRegControlStatus2, kCtrl2Tie);
 }
 
-void rtc_clear_alarm() {
-    // TODO (battery operation): implement the alarm flag reset according to
-    // the RTClib version (see rtc_set_next_wakeup_alarm).
+void rtc_clear_timer_flag() {
+    if (!s_initialized) return;
+    // Rewriting CTRL2 with TF/AF at 0 clears both flags while keeping TIE
+    // enabled for the next countdown.
+    writeReg(kRegControlStatus2, kCtrl2Tie);
 }

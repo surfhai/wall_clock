@@ -1,0 +1,39 @@
+; wifi_defaults.ini.example — template for optional default WiFi credentials
+;
+; Copy this file to wifi_defaults.ini (project root) and fill in real
+; values. wifi_defaults.ini is excluded via .gitignore and will NOT be
+; committed - only this .example stays in git.
+;
+; Purpose (see CLAUDE.md section 5a "Default-Zugangsdaten beim Firmware-
+; Upload vorschreiben"): on first boot, if no WiFi credentials are stored
+; in NVS yet, net_time.cpp seeds them from DEFAULT_WIFI_SSID/
+; DEFAULT_WIFI_PASS below - so initial commissioning can skip the
+; WiFiManager captive portal. Purely optional: without this file (or with
+; placeholder values that don't actually connect), the clock just falls
+; back to the captive portal as usual, see include/net_time.h.
+;
+; platformio.ini pulls this in via `extra_configs = wifi_defaults*.ini`
+; (a glob, so it's not an error if this file doesn't exist) and merges
+; this section's build_flags into the main environment.
+;
+; IMPORTANT quoting: use '"..."' (single quotes around a literal
+; double-quoted string), NOT \"...\" - PlatformIO tokenizes build_flags
+; shlex-style, so \"..\" only survives intact if the value has no spaces.
+; A real-world SSID/password often does (e.g. "Der Pinky und der Brain.")
+; - with \"..\" it silently gets split into several bogus arguments and
+; fails with a C++ syntax error at the point of use in net_time.cpp
+; instead of an obvious config error. '"..."' keeps the whole value as one
+; token while still producing a valid quoted C string for the -D macro.
+;
+; WIFI_CONFIG_AP_PASSWORD (see include/config.h): also belongs here, NOT
+; hardcoded in config.h, for the same reason as DEFAULT_WIFI_SSID/PASS -
+; that file is committed to git. This protects the temporary WiFiManager
+; setup AP itself (see CLAUDE.md section 5a), not your home WiFi. Must be
+; at least 8 characters (WPA2 minimum) or WiFiManager silently falls back
+; to an open AP.
+
+[wifi_defaults]
+build_flags =
+    -D DEFAULT_WIFI_SSID='"YOUR_WIFI_SSID"'
+    -D DEFAULT_WIFI_PASS='"YOUR_WIFI_PASSWORD"'
+    -D WIFI_CONFIG_AP_PASSWORD='"YOUR_AP_PASSWORD_MIN_8_CHARS"'

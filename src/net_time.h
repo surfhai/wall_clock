@@ -6,6 +6,10 @@
 // WiFi class can no longer be found (build error "'WiFi' was not declared
 // in this scope").
 //
+// WiFi credentials are never hardcoded: they live in NVS (via Preferences)
+// and are entered through a WiFiManager captive portal when no working
+// connection is available (see CLAUDE.md section 5a).
+//
 // Only enabled briefly during the sync window (see CLAUDE.md section 5:
 // toggling WiFi at runtime). Currently (mains-powered) WiFi simply stays on
 // for simplicity; power.cpp will later take over targeted on/off switching
@@ -15,10 +19,11 @@
 #include <Arduino.h>
 #include <time.h>
 
-// Establishes the WiFi connection (credentials from include/secrets.h).
-// Blocks until WIFI_CONNECT_TIMEOUT_MS is reached. Returns true once
-// connected.
-bool wifi_connect();
+// Tries to connect using the credentials stored in NVS. If that fails (or
+// none are stored yet), opens the WiFiManager captive portal
+// (WIFI_CONFIG_AP_NAME) so the user can enter new ones. Blocks until either
+// connected or the portal times out. Returns true once connected.
+bool wifi_connect_or_configure();
 
 // Disconnects WiFi and powers down the WiFi modem (for the later
 // low-power operation, see CLAUDE.md section 5).

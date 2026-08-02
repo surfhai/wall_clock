@@ -22,13 +22,16 @@ bool rtc_get_time(struct tm &out);
 // Writes a time (e.g. after a successful NTP sync) to the PCF8563.
 void rtc_set_time(const struct tm &t);
 
+// Arms the PCF8563's countdown TIMER register (not the alarm register, see
+// CLAUDE.md section 5) with a 1 Hz source, so it fires an interrupt in
+// exactly `seconds` seconds (max RTC_TIMER_MAX_SECONDS, since the register
+// is 8-bit). RTClib's RTC_PCF8563 class does not expose the timer, so this
+// talks to the chip's timer registers directly over I2C.
 // TODO (battery operation, currently unused while DEEP_SLEEP_ENABLED == 0):
-// set an alarm for the next wakeup time (minute resolution is enough for
-// the display update cycle, see config.h DISPLAY_UPDATE_INTERVAL_MIN).
-// PIN_RTC_INT must be finalized first (see config.h TODO). Check the exact
-// alarm API against the actually installed RTClib version (Adafruit
-// RTClib, class RTC_PCF8563), as method names can differ between versions.
-void rtc_set_next_wakeup_alarm(uint8_t minutesFromNow);
+// PIN_RTC_INT must be finalized first (see config.h TODO) for the ESP32 to
+// actually wake up from this interrupt via ext0.
+void rtc_set_countdown_timer(uint8_t seconds);
 
-// Clears the alarm flag on the PCF8563 (call after waking up).
-void rtc_clear_alarm();
+// Clears the timer interrupt flag on the PCF8563 (call after waking up, so
+// the next rtc_set_countdown_timer() call can trigger INT again).
+void rtc_clear_timer_flag();

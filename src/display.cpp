@@ -8,18 +8,16 @@
 // GxEPD2_750c_Z8 if needed (see CLAUDE.md section 4/10).
 #include <GxEPD2_BW.h>
 
-// TODO (font strategy, CLAUDE.md section 6): these are just placeholder
-// fonts from the standard Adafruit GFX library. Once the final typeface
-// (Space Mono / JetBrains Mono / ...) and size are decided, replace with
-// the self-generated headers from include/fonts/ (see
-// include/fonts/README.md).
-#include <Fonts/FreeSansBold24pt7b.h>
-#include <Fonts/FreeSans12pt7b.h>
-#include <Fonts/FreeSans9pt7b.h>
+// Custom fonts generated via tools/generate_fonts.sh from Droid Sans Mono
+// Bold (see include/fonts/README.md), per CLAUDE.md section 6. Sizes were
+// measured pixel-precisely from docs/Layout.png, see docs/layout.md.
+#include "fonts/MonoClock187.h"
+#include "fonts/MonoSmall38.h"
+#include "fonts/MonoMedium53.h"
 
-#define FONT_TIME     FreeSansBold24pt7b
-#define FONT_INFO     FreeSans12pt7b
-#define FONT_SENSOR   FreeSans9pt7b
+#define FONT_TIME    droid_sans_mono_bold130pt7b  // MonoClock187.h, digits + ':'
+#define FONT_SMALL   droid_sans_mono_bold26pt7b   // MonoSmall38.h, full ASCII - week + weekday
+#define FONT_MEDIUM  droid_sans_mono_bold37pt8b   // MonoMedium53.h, ASCII + Latin-1 - date + temp + humidity
 
 // Full-buffer mode (needs PSRAM) vs. paged mode, see CLAUDE.md section 4
 // and config.h/platformio.ini (BOARD_HAS_PSRAM).
@@ -34,12 +32,40 @@ static EPaperDisplay display(GxEPD2_750_T7(PIN_EPD_CS, PIN_EPD_DC, PIN_EPD_RST, 
 static uint16_t s_ghostingCounter = 0;
 
 // ---------------------------------------------------------------------------
-// Layout — placeholder until the final layout sketch is available
-// (see CLAUDE.md section 10). All regions refer to 800x480.
+// Layout — each piece of information gets its own (x, y) cursor position,
+// measured pixel-precisely from docs/Layout.png (an 800x480 to-scale
+// mockup); see docs/layout.md for the measurement method. (x, y) is the
+// Adafruit GFX cursor position (baseline, left edge) for that string.
+//
+// Elements meant to align share the same X (week/weekday/date: left column,
+// all at WEEK_X; temperature/humidity: right column, both at TEMP_X) or the
+// same general row grouping, per the mockup.
 // ---------------------------------------------------------------------------
-static const int16_t TIME_X = 40,  TIME_Y = 30,  TIME_W = 500, TIME_H = 160;
-static const int16_t INFO_X = 40,  INFO_Y = 200, INFO_W = 720, INFO_H = 140;
-static const int16_t SENSOR_X = 40, SENSOR_Y = 360, SENSOR_W = 720, SENSOR_H = 100;
+// MonoClock187.h confirmed to have the same quirk as its 250px predecessor:
+// positive GFXglyph yOffset (e.g. '1': xOffset=25, yOffset=75 - glyphs draw
+// *below* the cursor, not above it). TIME_X/TIME_Y are back-calculated from
+// '1' (the first character of "12:05") so the glyph top lands at the
+// measured mockup position (x=24, y=34, see docs/layout.md): cursor = target
+// - offset, i.e. deliberately negative. This is correct, not a bug - the
+// actual drawn pixels (cursor + offset) still land on-screen.
+static const int16_t TIME_X = -1, TIME_Y = -41;
+
+static const int16_t LEFT_X = 17;                // shared left edge: week/weekday/date
+static const int16_t WEEK_Y = 320;               // "KW32" / "CW32"
+static const int16_t WEEKDAY_Y = 387;            // "Donnerstag" / "Thursday"
+static const int16_t DATE_Y = 468;               // "2026-07-30"
+
+static const int16_t RIGHT_X = 526;              // shared left edge: temperature/humidity
+static const int16_t TEMP_Y = 359;               // "24,3°C"
+static const int16_t HUMIDITY_Y = 464;           // "55%rLF"
+
+// Erase/partial-refresh regions. TIME gets its own box; WEEK/WEEKDAY/DATE
+// and TEMP/HUMIDITY are erased+redrawn together as two side-by-side blocks
+// (cheaper than 5 separate partial windows, and they're always updated
+// together anyway - see main.cpp's tier logic).
+static const int16_t TIME_BOX_X = 10, TIME_BOX_Y = 10, TIME_BOX_W = 780, TIME_BOX_H = 230;
+static const int16_t LEFT_BOX_X = 10, LEFT_BOX_Y = 278, LEFT_BOX_W = 450, LEFT_BOX_H = 200;
+static const int16_t RIGHT_BOX_X = 520, RIGHT_BOX_Y = 298, RIGHT_BOX_W = 270, RIGHT_BOX_H = 180;
 
 static void drawText(const char *text, int16_t x, int16_t y, const GFXfont *font) {
     display.setFont(font);
@@ -48,21 +74,21 @@ static void drawText(const char *text, int16_t x, int16_t y, const GFXfont *font
     display.print(text);
 }
 
-static void drawAllFields(const DisplayData &data) {
-    // Time — large field
-    drawText(data.timeStr, TIME_X, TIME_Y + 100, &FONT_TIME);
+static void drawTime(const char *timeStr) {
+    // See the TIME_X/TIME_Y comment above re: the negative cursor position
+    // - this is intentional, not a mistake.
+    drawText(timeStr, TIME_X, TIME_Y, &FONT_TIME);
+}
 
-    // Weekday, date, calendar week
-    char infoLine[48];
-    snprintf(infoLine, sizeof(infoLine), "%s, %s  %s",
-             data.weekdayStr, data.dateStr, data.weekStr);
-    drawText(infoLine, INFO_X, INFO_Y + 30, &FONT_INFO);
+static void drawInfoBlock(const DisplayData &data) {
+    drawText(data.weekStr, LEFT_X, WEEK_Y, &FONT_SMALL);
+    drawText(data.weekdayStr, LEFT_X, WEEKDAY_Y, &FONT_SMALL);
+    drawText(data.dateStr, LEFT_X, DATE_Y, &FONT_MEDIUM);
+}
 
-    // Temperature / humidity
-    char sensorLine[24];
-    snprintf(sensorLine, sizeof(sensorLine), "%s   %s",
-             data.tempStr, data.humidityStr);
-    drawText(sensorLine, SENSOR_X, SENSOR_Y + 30, &FONT_SENSOR);
+static void drawSensorBlock(const DisplayData &data) {
+    drawText(data.tempStr, RIGHT_X, TEMP_Y, &FONT_MEDIUM);
+    drawText(data.humidityStr, RIGHT_X, HUMIDITY_Y, &FONT_MEDIUM);
 }
 
 void display_init() {
@@ -83,39 +109,42 @@ void display_full_refresh(const DisplayData &data) {
     display.firstPage();
     do {
         display.fillScreen(GxEPD_WHITE);
-        drawAllFields(data);
+        drawTime(data.timeStr);
+        drawInfoBlock(data);
+        drawSensorBlock(data);
     } while (display.nextPage());
 
     s_ghostingCounter = 0;
 }
 
 void display_partial_update_time(const char *timeStr) {
-    display.setPartialWindow(TIME_X, TIME_Y, TIME_W, TIME_H);
+    display.setPartialWindow(TIME_BOX_X, TIME_BOX_Y, TIME_BOX_W, TIME_BOX_H);
     display.firstPage();
     do {
-        display.fillRect(TIME_X, TIME_Y, TIME_W, TIME_H, GxEPD_WHITE);
-        drawText(timeStr, TIME_X, TIME_Y + 100, &FONT_TIME);
+        display.fillRect(TIME_BOX_X, TIME_BOX_Y, TIME_BOX_W, TIME_BOX_H, GxEPD_WHITE);
+        drawTime(timeStr);
     } while (display.nextPage());
 
     s_ghostingCounter++;
 }
 
 void display_partial_update_info(const DisplayData &data) {
-    display.setPartialWindow(INFO_X, INFO_Y, INFO_W, INFO_H + SENSOR_H + (SENSOR_Y - (INFO_Y + INFO_H)));
+    // One combined window spanning both blocks (with the gap between them)
+    // - one partial refresh instead of two, see CLAUDE.md section 7.
+    int16_t x = LEFT_BOX_X;
+    int16_t y = (LEFT_BOX_Y < RIGHT_BOX_Y) ? LEFT_BOX_Y : RIGHT_BOX_Y;
+    int16_t right = RIGHT_BOX_X + RIGHT_BOX_W;
+    int16_t bottom = (LEFT_BOX_Y + LEFT_BOX_H > RIGHT_BOX_Y + RIGHT_BOX_H)
+                          ? LEFT_BOX_Y + LEFT_BOX_H
+                          : RIGHT_BOX_Y + RIGHT_BOX_H;
+
+    display.setPartialWindow(x, y, right - x, bottom - y);
     display.firstPage();
     do {
-        display.fillRect(INFO_X, INFO_Y, INFO_W, INFO_H, GxEPD_WHITE);
-        display.fillRect(SENSOR_X, SENSOR_Y, SENSOR_W, SENSOR_H, GxEPD_WHITE);
-
-        char infoLine[48];
-        snprintf(infoLine, sizeof(infoLine), "%s, %s  %s",
-                 data.weekdayStr, data.dateStr, data.weekStr);
-        drawText(infoLine, INFO_X, INFO_Y + 30, &FONT_INFO);
-
-        char sensorLine[24];
-        snprintf(sensorLine, sizeof(sensorLine), "%s   %s",
-                 data.tempStr, data.humidityStr);
-        drawText(sensorLine, SENSOR_X, SENSOR_Y + 30, &FONT_SENSOR);
+        display.fillRect(LEFT_BOX_X, LEFT_BOX_Y, LEFT_BOX_W, LEFT_BOX_H, GxEPD_WHITE);
+        display.fillRect(RIGHT_BOX_X, RIGHT_BOX_Y, RIGHT_BOX_W, RIGHT_BOX_H, GxEPD_WHITE);
+        drawInfoBlock(data);
+        drawSensorBlock(data);
     } while (display.nextPage());
 
     s_ghostingCounter++;

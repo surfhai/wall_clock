@@ -15,13 +15,13 @@ void power_init_rtc_wakeup() {
 #endif
 }
 
-bool power_woke_from_rtc_alarm() {
+bool power_woke_from_rtc_timer() {
     return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
 }
 
 void power_enter_deep_sleep() {
 #if DEEP_SLEEP_ENABLED
-    Serial.println("[power] Entering deep sleep until the next PCF8563 alarm.");
+    Serial.println("[power] Entering deep sleep until the next PCF8563 timer interrupt.");
     Serial.flush();
     esp_deep_sleep_start();
 #else

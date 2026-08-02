@@ -5,8 +5,10 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch/
+Adafruit-GFX-Library/
 build/
 .env
 
-# contains WiFi credentials, see include/secrets.h.example
-include/secrets.h
+# optional default WiFi credentials for first-boot bootstrap, see
+# platformio.ini and CLAUDE.md section 5a - not committed if used
+wifi_defaults.ini
